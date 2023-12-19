@@ -1,0 +1,315 @@
+---
+title: "Exploring Statistical Machine Learning Models"
+author: "Tahsin Azad"
+date: "2023-11-24"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(skimr)
+library(ltm)
+library(caret)
+library(ROCR)
+library(FNN)
+library(tree)
+library(maptree)
+library(randomForest)
+```
+# Intro
+Diabetes is a crucial medical issue today. For this final project, we will be observing a diabetes dataset and doing classification, by classifying whether a female over the age of 21 from the Pima Indian heritage has diabetes or not given other factors. This dataset is from kaggle:
+
+https://www.kaggle.com/datasets/uciml/pima-indians-diabetes-database
+
+# Data Description
+The first step will be to load the dataset and take a look at the data description.
+```{r 1}
+diabetes <- read_csv("diabetes.csv")
+diabetes<- as_tibble(diabetes)
+head(diabetes)
+```
+Descriptive Statistics:
+```{r 1.1}
+summary(diabetes)
+```
+Length of dataset
+```{r 1.12}
+nrow(diabetes)
+```
+
+Checking for missing values:
+```{r 1.2}
+sum(is.na(diabetes))
+```
+There are no missing values. Moreover, we noticed that there are no categorial variables besides the Outcome variable, which is what we will be classifying for. 
+
+One observation is that some medical variables have "0" which does not make sense in this context. This would not make sense for Glucose, BloodPressure, SkinThickness, and BMI. We can check how many have zero.
+
+```{r 1.3}
+sum(diabetes$Glucose == 0)
+sum(diabetes$BloodPressure == 0)
+sum(diabetes$SkinThickness == 0)
+sum(diabetes$BMI == 0)
+```
+
+Since we have 768 rows, we will opt to drop those rows where the variable is 0 for Glucose, BloodPressure, and BMI since they are a small amount. However for SkinThickness, intead we will place the mean of SkinThickness.
+```{r 2.65}
+new_diabetes <-diabetes %>%
+  filter(Glucose != 0, BloodPressure != 0, BMI != 0)
+skin <- diabetes$SkinThickness
+mean_skin <- mean(skin[skin != 0], na.rm = TRUE)
+new_diabetes$SkinThickness[new_diabetes$SkinThickness == 0] <- mean_skin
+```
+
+# Exploratory Data Analysis and Visualization
+The following will show different visualizations for variables in this dataset:
+
+Noticing the Outcome variable, we'll look at a histogram for it. 0 represents "no the patient does not have diabetes" and 1 represents "yes, the patient has diabetes". Also a histogram for pregnancies. 
+```{r 2.1}
+ggplot(data = new_diabetes) + geom_histogram(mapping = aes(x = Outcome), binwidth = 0.5)
+ggplot(data = diabetes) + geom_histogram(mapping = aes(x = Pregnancies), binwidth = 0.5)
+```
+Boxplots:
+```{r 2.2}
+boxplot(new_diabetes$Glucose ~ new_diabetes$Outcome, main="Glucose by Outcome", xlab="Outcome", ylab="Glucose")
+boxplot(new_diabetes$Insulin ~ new_diabetes$Outcome, main="Insulin by Outcome", xlab="Outcome", ylab="Insulin")
+```
+Histogram for age:
+```{r 2.5}
+ggplot(new_diabetes, aes(x = Age)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+  facet_grid(. ~ Outcome) + labs(x = "Age", y = "Count", title = "Histograms of Age for Both Outcomes")
+```
+We can observe that younger people generally do not have diabetes, and that older people do have it slightly more.
+
+Due to the various different ranges between the variables, they will be normalized:
+```{r 2.645}
+cop_diabetes<- new_diabetes
+features <- setdiff(names(cop_diabetes), "Outcome")
+preProcValues <- preProcess(cop_diabetes[, features], method = c("range"))
+diabetes_normalized <- predict(preProcValues, cop_diabetes[, features])
+diabetes_normalized$Outcome <- cop_diabetes$Outcome
+
+head(diabetes_normalized)
+```
+Normalization ensures that there is less data redundancy.
+
+Correlation between variables below (since Outcome is categorical, Point-Biserial method is used):
+```{r 2.7}
+sapply(diabetes_normalized[, c("Pregnancies", "Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI", "DiabetesPedigreeFunction", "Age")], function(x) biserial.cor(x, diabetes_normalized$Outcome))
+```
+# Problem formulation and discussion of statistical algorithms
+
+## Discussion
+The objective which we will try to reach is predicting whether a female over the age of 21 from the Pima Indian heritage has diabetes or not. This is important because diabetes is a health-related issue and figuring out which factors effect having diabetes is crucial. Based on the correlation matrix and the previous EDA, it seems the strongest factors are Glucose, BMI, and Age. Since this is a binary classification, we will start with choosing a logistic regression model after splitting the data into a training and testing split (based on 80-20).
+
+```{r 3}
+set.seed(123)
+partition <- createDataPartition(diabetes_normalized$Outcome, p = 0.80, list = FALSE)
+train.diabetes.norm <- diabetes_normalized[partition, ]
+test.diabetes.norm  <- diabetes_normalized[-partition, ]
+
+log.model <-glm(Outcome ~ Glucose + BMI + Age, data = train.diabetes.norm , family = binomial)
+summary(log.model)$coefficients
+```
+By observing the p values we can see the significance. The null hypothesis is that these values have no significant influence over the Outcome of diabetes. Since all of these have extremely small P-values, this tells us that the all the values, Glucose, BMI, and Age are significant estimators in this logistic regression model.For every one unit change in Glucose, the log odds of having diabetes, versus not having diabetes, increases by 5.240214, holding other variables fixed. For every one unit change in BMI, the log odds of having diabetes, versus not having diabetes, increases by 4.654975, holding other variables fixed.For every one unit change in Age, the log odds of having diabetes, versus not having diabetes, increases by 1.568920, holding other variables fixed.
+# Checking for outliers
+Having chosen the variables, we will also check for outliers:
+```{r 2.999}
+pairs(~Glucose + BMI + Age, data = train.diabetes.norm, col = train.diabetes.norm$Outcome)
+```
+Between the variables, there are some outliers noticed.
+
+# Logistic model on test data and confusion matrix
+```{r 3.1}
+set.seed(123)
+train.diabetes.norm.copy = train.diabetes.norm
+test.diabetes.norm.copy = test.diabetes.norm
+
+pred.train <- predict(log.model, test.diabetes.norm.copy, type = "response")
+test.diabetes.norm.copy.mutated <- test.diabetes.norm.copy %>%
+  mutate(PredictedOutcome = as.factor(ifelse(pred.train <= 0.5, "No", "Yes")))
+
+conf_log <- table(pred=test.diabetes.norm.copy.mutated$PredictedOutcome, true=test.diabetes.norm$Outcome)
+conf_log
+```
+Interpretation of the confusion matrix: 80 believed to have diabetes correctly had it, while 28 believed to have diabetes did not. 27 correctly identified to not have diabetes while 9  were identified to have diabetes when they did not (False Positive). 74.31% were identified correctly.
+
+True positive rate is defined as the true positive divided by (true positive + false negative). In this problem it is 0.75.
+False positive rate is defined as the false positive divided by (false positive + true negative). In this problem it is 0.2593.
+
+This suggest that the although model is good and accurate at predicting positive "yes" for diabetes, it does get some mistakes, around 1/4. 
+
+# ROC Curve and AUC (Performace Metrics)
+We wil observe ROC Curve and AUC (area under curve) to have a better glance at the performance metrics.
+```{r 3.2}
+set.seed(123)
+predic <- prediction(pred.train, test.diabetes.norm.copy$Outcome)
+for_roc <- performance(predic, measure="tpr", x.measure="fpr")
+plot(for_roc, col=2, lwd=3, main="ROC curve")
+abline(0,1)
+```
+Judging by the plot, the ROC curve is considered moderately good, and could be better potentially. The Area under the curve (AUC) gives a better outlook:
+
+```{r 3.3}
+auc = performance(predic, "auc")@y.values
+auc
+```
+This confirms that it is moderately good. For AUC, the closer to 1.0, the better. 
+
+# Checking for overfitting
+Now is a good time to check for overfitting. We will do this by comparing the AUC for the test data and train data. Ideally, the AUC for both should be relatively close to each other. We have the AUC for the test data already.
+
+```{r 4.9999}
+pred.traina <- predict(log.model, train.diabetes.norm.copy, type = "response")
+predic1e <- prediction(pred.traina, train.diabetes.norm.copy$Outcome)
+auc32 = performance(predic1e, "auc")@y.values
+auc32
+```
+Both values are extremely close, so it is likely there is very little overfitting.
+
+# Cross validation
+Cross validation will be used to evaluate the model.
+```{r 5.1}
+set.seed(123)
+control <- trainControl(method = "cv", number = 10)
+new_diabetes$Outcome <- as.factor(new_diabetes$Outcome)
+log_cv <- train(Outcome ~ Glucose + BMI + Age,data = new_diabetes, family = binomial(), method = "glm", trControl = control)
+log_cv
+```
+With a 10-fold cross validation, we can see that there is a 76.79% accuracy and a kappa which is moderate. This shows that the model is good, but there could be more done to improve. 
+
+# Testing with different models
+We will also compare between different model types, instead of just logistic regression. Since we are classifying a binary result, we can use a K-Nearest Neighbor, Decision Tree, Random Forest, and Support Vector Machine model, then compare between them all and discuss the pros and cons surrounding it. 
+
+## K-NN
+First is the K-NN. We will normalize the data for this model.
+```{r 7.1}
+set.seed(123)
+
+x_train_norm <- train.diabetes.norm.copy[, -which(names(test.diabetes.norm) == "Outcome")]
+y_train_norm <- train.diabetes.norm.copy$Outcome
+x_test_norm <- test.diabetes.norm.copy[, -which(names(test.diabetes.norm) == "Outcome")]
+y_test_norm <- test.diabetes.norm.copy$Outcome
+
+pred.ytrain <- knn(train = x_train_norm, test = x_test_norm, cl = y_train_norm, k = 5)
+conf_knn <- table(Predicted = pred.ytrain, Actual = y_test_norm)
+conf_knn
+```
+
+## Decision Tree
+```{r 8.11}
+set.seed(123)
+tree.decision = rpart(Outcome ~ Glucose + BMI + Age, data = new_diabetes)
+draw.tree(tree.decision, nodeinfo=TRUE,cex = 0.4)
+title("Decision Tree")
+```
+From this decision tree model we can see how the outcome of diabetes is classified based on Glucose, Age, and BMI. Glucose is the most defining factor. We will also use the train test split to determine evaluate the performance. 
+
+On the training data:
+```{r 8.1}
+set.seed(123)
+train.diabetes.norm.copy$Outcome <- as.factor(train.diabetes.norm.copy$Outcome)
+train.tree <- rpart(Outcome ~ Glucose + BMI + Age, data = train.diabetes.norm.copy, method = "class")
+draw.tree(train.tree, nodeinfo=TRUE,cex = 0.4)
+title("Decision Tree on Training data")
+```
+
+Then we predict on the test data and compute the confusion matrix
+
+```{r 8.2}
+set.seed(123)
+pred.tree = predict(train.tree, test.diabetes.norm.copy, type="class")
+confus.tree = table(pred.tree, test.diabetes.norm.copy$Outcome)
+confus.tree
+```
+## Random Forest
+```{r 9.1}
+set.seed(123)
+train.random <- randomForest(Outcome ~ Glucose + BMI + Age, data=train.diabetes.norm.copy, importance=TRUE)
+train.random
+```
+
+```{r 9.2}
+set.seed(123)
+pred.random = predict(train.random, test.diabetes.norm.copy, type="class")
+confus.random = table(pred.random, test.diabetes.norm.copy$Outcome)
+confus.random
+```
+# Comparison of models and evaluation
+
+We will compare the different models and evaluate them, and disucss the strenghts and weaknesses amongst them and finally choose a model.
+```{r 9.3, echo=FALSE}
+set.seed(123)
+cat("Confusion Matrix for Logistic Regression:\n")
+print(conf_log)
+cat("Accuracy for Logistic Regression:\n")
+print(sum(diag(conf_log)) / sum(conf_log))
+cat("\n")  # Adding a newline for better readability
+
+cat("Confusion Matrix for k-Nearest Neighbors:\n")
+print(conf_knn)
+cat("Accuracy for k-Nearest Neighbors:\n")
+print(sum(diag(conf_knn)) / sum(conf_knn))
+cat("\n")
+
+cat("Confusion Matrix for Decision Tree:\n")
+print(confus.tree)
+cat("Accuracy for Decision Tree:\n")
+print(sum(diag(confus.tree)) / sum(confus.tree))
+cat("\n")
+
+cat("Confusion Matrix for Random Forest:\n")
+print(confus.random)
+cat("Accuracy for Random Forest:\n")
+print(sum(diag(confus.random)) / sum(confus.random))
+cat("\n")
+```
+Since Decision Tree and Random Forest have the highest accuracy, we check the ROC and AUC (Area under the curve) are observed for them:
+
+```{r 10.1}
+set.seed(123)
+train.tree1 <- rpart(Outcome ~ Glucose + BMI + Age, data = train.diabetes.norm.copy, method = "class")
+prob <- predict(train.tree1, test.diabetes.norm.copy, type = "prob")[, 2]
+actual_outcomes <- ifelse(test.diabetes.norm.copy$Outcome == '1', 1, 0)
+predic_random <- prediction(prob, actual_outcomes)
+for_roc <- performance(predic_random, measure="tpr", x.measure="fpr")
+plot(for_roc, col=2, lwd=3, main="ROC curve for Decision Tree")
+abline(0,1)
+```
+
+
+```{r 10.2}
+set.seed(123)
+prob1 <- predict(train.random, test.diabetes.norm.copy, type = "prob")[,2]
+actual_outcomes1 <- ifelse(test.diabetes.norm.copy$Outcome == '1', 1, 0)
+predic_random1 <- prediction(prob1, actual_outcomes1)
+for_roc1 <- performance(predic_random1, measure="tpr", x.measure="fpr")
+plot(for_roc1, col=2, lwd=3, main="ROC curve for Random Forest")
+abline(0,1)
+```
+
+```{r 10.3}
+set.seed(123)
+auc1 = performance(predic_random, "auc")@y.values
+cat("Area under Curve for Decision Tree:", format(auc1, digits = 4), "\n")
+```
+```{r 10.4}
+set.seed(123)
+auc2 = performance(predic_random1, "auc")@y.values
+cat("Area under Curve for Random Forest:", format(auc2, digits = 4), "\n")
+```
+The Area under the curve for the Random Forest is closer to 1.0, which means it is a better model. Moreover, it is also slightly more accurate. This seems to be the best model for classifying whether a female over the age of 21 from the Pima Indian heritage has diabetes, even better than the Logistic Model.
+
+# Discussion about models
+The following will discuss the different models and why the final choice for Random Forest was made. Although in this project, the Logistic regression model came out relatively good, there are some issues. Logistic regression assumes that there is a lienar relationship between the outcome diabetes and the log odds of the other variables Glucose, BMI, and Age. It is very possible that there were non-linear variables. 
+
+For the K-Nearest Neighbor model, it had the lowest accuracy. This may be due to the choice of the k value of 5. For improvement of this model, a graph showcasing the accuracies based on the k value would have been a better method to proceed by. Moreover, it could be that the data itself had high variance. 
+
+The Decision Tree model had a decent accuracy and overall is a good model. Improvement could be made had there been more importance stressed toward overfitting in this project, since Decision Tree models are susceptible easily to overfitting.
+
+The Random Forest Tree model seemed to be the best and this may be for multiple reasons. The RF model reduces overfitting by having a plethora of trees and works in a more complex way compared to the Decision Tree model. The high accuracy as well as AUC is proof of this. 
