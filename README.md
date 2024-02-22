@@ -2,4 +2,6 @@
 
 This project explores different statistical machine learning models for predicting diabetes, and the best model was chosen using R. A short discussion about the models was included. Comparisons and methods of cross validation were investigated.
 
-Project Link[Contribution guidelines for this project](docs/CONTRIBUTING.md)
+[Project Link](Exploring-Statistical-Machine-Learning-Models-With-R
+/RMarkdownPDF.pdf
+)
